@@ -1,0 +1,116 @@
+import cv2
+import numpy as np
+import matplotlib.pyplot as plt
+
+class MTF50_calculation:
+    def __init__(self, img_path):
+        self.image_path = img_path
+        self.img = None
+        self.cropped_img = None
+        self.center_roi_0 = 0.0
+        self.center_roi_1 = 0.0
+        self.center_roi_2 = 0.0
+        self.center_roi_3 = 0.0
+
+    def load_image(self):
+        self.img = cv2.imread(self.image_path, cv2.IMREAD_COLOR)
+        if self.img is None:
+            print("Error: image not found or cannot be loaded.")
+
+    def cropped_the_image(self):
+        # Calculate the roi
+        height, width, color_channel = self.img.shape
+        roi_size = height*0.15
+        # Cropped
+        cropped_rgb_img = self.img[int((height / 2) - roi_size): int((height / 2) + roi_size),
+                                   int((width / 2) - roi_size): int((width / 2) + roi_size), :].copy()
+
+        # Convert RGB to GRAY
+        self.cropped_img = cv2.cvtColor(cropped_rgb_img, cv2.COLOR_BGR2GRAY)
+
+    def locate_the_region_of_the_calculation_center(self):
+        # Edge detection
+        edges = cv2.Canny(image=self.cropped_img, threshold1=100, threshold2=200)
+        # Finding the contours
+        contours, hierarchy = cv2.findContours(edges, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
+        if not contours:
+            raise RuntimeError("No contours are found.")
+        # Findig the rectangle where we measure the MTF.
+        # Find the index of the biggest are in the cropped image
+        max_contours_area_index = np.argmax([cv2.contourArea(contour) for contour in contours])
+        data = contours[max_contours_area_index].squeeze()
+        # Calculate the roi positions
+        self.center_roi_0 = self.cropped_img[data[0][1] + 5: data[0][1] + 45, data[0][0] - 15: data[0][0] + 15]  # left side
+        self.center_roi_1 = self.cropped_img[data[0][1] + 5: data[0][1] + 45,data[0][0] + 30: data[0][0] + 60]  # right side
+        self.center_roi_2 = self.cropped_img[data[0][1] - 15: data[0][1] + 15, data[0][0] + 5: data[0][0] + 45]  # top side
+        self.center_roi_3 = self.cropped_img[data[0][1] + 30: data[0][1] + 60, data[0][0]: data[0][0] + 40]  # bottom side
+
+        return [self.center_roi_0, self.center_roi_1, self.center_roi_2, self.center_roi_3]
+
+    def calculate_mtf50_with_percentage(self, roi, vertical=1):
+        # ESF determination (averaging over columns or rows)
+        if vertical:
+            esf = np.mean(roi, axis=0)
+        else:
+            esf = np.mean(roi, axis=1)
+
+        # Calculation of LSF by derivation of ESF
+        lsf = np.gradient(esf)
+
+        # Fourier transform to determine the MTF
+        mtf = np.abs(np.fft.fft(lsf))
+        frequencies = np.fft.fftfreq(len(lsf))
+
+        # Display positive frequencies only
+        mtf = mtf[:len(mtf) // 2]
+        frequencies = frequencies[:len(frequencies) // 2]
+
+        # Normalisation to the maximum value
+        mtf /= np.max(mtf)
+
+        # Producing the x-axis percentage scale
+        modulation_percentages = frequencies / np.max(frequencies) * 100
+
+        # Find the MTF50 value (50% modulation)
+        idx = np.where(mtf <= 0.5)[0][0]
+        x1, x2 = modulation_percentages[idx - 1], modulation_percentages[idx]
+        y1, y2 = mtf[idx - 1], mtf[idx]
+        mtf50_percentage = x1 + (0.5 - y1) * (x2 - x1) / (y2 - y1)
+
+        return (mtf50_percentage, modulation_percentages, mtf)
+
+    def visualize_the_results(self):
+
+        mtf50s = []
+        center_coordinates = self.locate_the_region_of_the_calculation_center()
+
+        for i, cordinate in enumerate(center_coordinates):
+            if i < 2:
+                vertical = 1
+            else:
+                vertical = 0
+            mtf50s.append(self.calculate_mtf50_with_percentage(cordinate,vertical=vertical))
+
+        print(f"MTF50 modulációs százalék: {mtf50s[0][0]}%")
+        print(f"MTF50 modulációs százalék: {mtf50s[1][0]}%")
+        print(f"MTF50 modulációs százalék: {mtf50s[2][0]}%")
+        print(f"MTF50 modulációs százalék: {mtf50s[3][0]}%")
+
+        # Show the results
+        fig, ax = plt.subplots(nrows=2, ncols=2)
+        for i,ax in enumerate(ax.flatten()):
+            ax.plot(mtf50s[i][1], mtf50s[i][2], label=f"MTF Curve Roi{i}")
+            ax.axhline(0.5, color='r', linestyle='--', label="50% Threshold")
+            ax.axvline(mtf50s[i][0], color='g', linestyle='--', label=f"MTF50 = {mtf50s[i][0]:.2f}%")
+            ax.set_title(f"MTF Curve (Modulation in Percentage) ROI{i}")
+            ax.set_xlabel("Modulation (%)")
+            ax.set_ylabel("MTF Value")
+            ax.legend()
+        plt.show()
+
+
+mtf = MTF50_calculation(img_path=r"0004269983_MTFTest.bmp")
+load = mtf.load_image()
+cropped = mtf.cropped_the_image()
+mtf.locate_the_region_of_the_calculation_center()
+mtf.visualize_the_results()
