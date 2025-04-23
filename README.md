@@ -9,3 +9,17 @@ Region Localization: It detects edges, identifies contours, and determines the R
 MTF50 Calculation: It calculates the MTF curve and extracts the MTF50 value (50% modulation) for specific ROIs.
 
 Visualization: The results, including the MTF curves and MTF50 values, are plotted using Matplotlib for better analysis and interpretation.
+
+-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+The blemishcheck script defines a BlemishCheck class that processes an image to detect blemishes or particles. It follows these steps:
+
+Load Image – Reads the image from the given path and converts it to grayscale.
+
+Crop Edges – Removes unwanted borders depending on the camera lens type.
+
+Preprocess Image – Applies Gaussian blur and adaptive thresholding to enhance blemish visibility.
+
+Count Particles – Identifies contours in the processed image to determine the number and size of detected blemishes.
+
+Display Results – Shows the original image and highlights the largest detected blemish.
