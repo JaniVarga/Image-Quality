@@ -1,4 +1,4 @@
-This program calculates the MTF50 (Modulation Transfer Function 50%) of an image, which is a key metric for evaluating optical image quality. The program includes the following steps:
+mtf_50_calc calculates the MTF50 (Modulation Transfer Function 50%) of an image, which is a key metric for evaluating optical image quality. The program includes the following steps:
 
 Image Loading: It loads a color image using OpenCV.
 
