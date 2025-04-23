@@ -1,0 +1,72 @@
+import cv2
+
+class BlemishCheck:
+    def __init__(self, img_path, camera_lens = 0):
+        self.img_path = img_path
+        self.img = None
+        self.camera_lens = camera_lens
+        self.cut_img = None
+        self.preprocessed_image = None
+
+    def show_image(self, name_of_the_window ,img_to_show):
+        cv2.imshow(name_of_the_window, img_to_show)
+        cv2.waitKey(0)
+        cv2.destroyAllWindows()
+
+    def load_image(self):
+        self.img = cv2.imread(self.img_path, cv2.IMREAD_COLOR)
+        if self.img is None:
+            print("Error: image not found or cannot be loaded. Please check the path")
+            return
+        self.img = cv2.cvtColor(self.img, cv2.COLOR_BGR2GRAY)
+
+        self.show_image("Original image",self.img)
+
+    def cutting_the_edge(self):
+        if self.camera_lens == 0:
+            self.cut_img = self.img[12:-12,12:-12]
+        else:
+            self.cut_img = self.img[3:, :]
+
+    def image_preprocessing(self):
+        self.preprocessed_image = cv2.GaussianBlur(self.cut_img, ksize=(3, 3), sigmaX=0)
+        self.preprocessed_image = cv2.adaptiveThreshold(self.preprocessed_image,
+                                                        maxValue=255,
+                                                        adaptiveMethod=cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+                                                        thresholdType=cv2.THRESH_BINARY,
+                                                        blockSize=3,
+                                                        C=3)
+
+        # self.show_image("Preprocessed Image", self.preprocessed_image)
+
+    def count_particle(self):
+        img = self.preprocessed_image.copy()
+
+        contours, _ = cv2.findContours(img, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
+
+        if len(contours) > 1:
+            num_black_spots = len(contours)
+            print(f"Number of particles found: {num_black_spots}")
+
+            largest_contour_size = sorted([(cv2.contourArea(contour),i) for i,contour in enumerate(contours)])[-2]
+            print(f"The size of the largest blemish: {largest_contour_size[0]} pixels")
+
+            contour_img = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
+            cv2.drawContours(contour_img, contours[largest_contour_size[1]], -1, (0, 0, 255), 2)
+            self.show_image("Show the largest blemish", contour_img)
+
+        else:
+            print("No particle found on the image")
+
+    def run(self):
+        self.load_image()
+        self.cutting_the_edge()
+        self.image_preprocessing()
+        self.count_particle()
+
+
+bc = BlemishCheck(img_path=r"C:\Users\jvarga1\PycharmProjects\MTF_50_szamitas\0004272399_Particles.bmp", camera_lens=0)
+bc.load_image()
+bc.cutting_the_edge()
+bc.image_preprocessing()
+bc.count_particle()
