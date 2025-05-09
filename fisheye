@@ -1,4 +1,5 @@
-# MEG NAGYON NEM JÓ!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+# NAGYON NEM JO MÉG!!!!!!!!!!
+
 
 import cv2
 import numpy as np
@@ -13,7 +14,7 @@ class FisheyeCalibration:
         self.points = []
 
     def cropped_the_image(self, image):
-        return image[3:-3, 3:-3]
+        return image[10:-10, 10:-10]
 
     def show_image(self, windows_name, image):
         if image is None or image.size == 0:
@@ -39,9 +40,6 @@ class FisheyeCalibration:
         contours, _ = cv2.findContours(self.pre_processed_image, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
         debug_img = self.cropped_img.copy()
 
-        margin = 15
-        height, width = self.pre_processed_image.shape[:2]
-
         for contour in contours:
             approx = cv2.approxPolyDP(contour, 0.04 * cv2.arcLength(contour, True), True)
 
@@ -52,9 +50,7 @@ class FisheyeCalibration:
 
                 if (
                         0.6 < aspect_ratio < 1.6 and
-                        50 < area < 12000 and
-                        y > margin and
-                        y + h_rect < height - margin
+                        50 < area < 12000
                 ):
                     M = cv2.moments(approx)
                     if M["m00"] != 0:
