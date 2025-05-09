@@ -1,0 +1,235 @@
+# MEG NAGYON NEM JÓ!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+
+import cv2
+import numpy as np
+import matplotlib.pyplot as plt
+
+class FisheyeCalibration:
+    def __init__(self, img_path):
+        self.img_path = img_path
+        self.img = None
+        self.pre_processed_image = None
+        self.cropped_img = None
+        self.points = []
+
+    def cropped_the_image(self, image):
+        return image[3:-3, 3:-3]
+
+    def show_image(self, windows_name, image):
+        if image is None or image.size == 0:
+            return
+        cv2.imshow(windows_name, image)
+        cv2.waitKey(0)
+        cv2.destroyAllWindows()
+
+    def read_image(self):
+        self.img = cv2.imread(self.img_path, cv2.IMREAD_COLOR)
+        if self.img is None:
+            raise FileNotFoundError("Image not loaded or file path not correct.")
+        self.cropped_img = self.cropped_the_image(self.img)
+
+    def pre_processing_image(self):
+        gray = cv2.cvtColor(self.cropped_img, cv2.COLOR_BGR2GRAY)
+        blurred = cv2.GaussianBlur(gray, (7, 7), 0)
+        _, thresh = cv2.threshold(blurred, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+        kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
+        self.pre_processed_image = cv2.erode(thresh, kernel, iterations=1)
+
+    def find_contours(self):
+        contours, _ = cv2.findContours(self.pre_processed_image, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
+        debug_img = self.cropped_img.copy()
+
+        margin = 15
+        height, width = self.pre_processed_image.shape[:2]
+
+        for contour in contours:
+            approx = cv2.approxPolyDP(contour, 0.04 * cv2.arcLength(contour, True), True)
+
+            if len(approx) == 4 and cv2.isContourConvex(approx):
+                x, y, w_rect, h_rect = cv2.boundingRect(approx)
+                aspect_ratio = float(w_rect) / h_rect
+                area = cv2.contourArea(contour)
+
+                if (
+                        0.6 < aspect_ratio < 1.6 and
+                        50 < area < 12000 and
+                        y > margin and
+                        y + h_rect < height - margin
+                ):
+                    M = cv2.moments(approx)
+                    if M["m00"] != 0:
+                        cx = int(M["m10"] / M["m00"])
+                        cy = int(M["m01"] / M["m00"])
+                        h, w = self.pre_processed_image.shape[:2]
+                        if 0 <= cx < w and 0 <= cy < h:
+                            self.points.append((cx, cy))
+
+                        cv2.circle(debug_img, (cx, cy), 3, (0, 0, 255), -1)
+
+        print(f"🔍 Összesen {len(self.points)} középpont található.")
+        self.show_image("Középpontok megjelenítése", debug_img)
+
+    def sort_points_by_coordinates(self, points):
+        try:
+            points_sorted = sorted(points, key=lambda p: (p[0], p[1]))
+        except IndexError:
+            return []
+        return np.array(points_sorted, dtype=np.float32)
+
+    def is_in_trapezoid(self, x, y, cx, cy, square_size, height, expand):
+        y_top = cy - square_size // 2
+        y_bottom = cy + square_size // 2
+        if y_top - height <= y < y_top:
+            ratio = (y_top - y) / height
+            half_width = (square_size / 2) + ratio * expand
+            return cx - half_width <= x <= cx + half_width
+        elif y_bottom < y <= y_bottom + height:
+            ratio = (y - y_bottom) / height
+            half_width = (square_size / 2) + ratio * expand
+            return cx - half_width <= x <= cx + half_width
+        return False
+
+    def group_points_by_position(self):
+        h, w = self.cropped_img.shape[:2]
+        cx, cy = w // 2, h // 2
+        square_size = 420
+        trap_height = 180
+        trap_expand = 180
+        x_min = cx - square_size // 2
+        x_max = cx + square_size // 2
+        y_min = cy - square_size // 2
+        y_max = cy + square_size // 2
+        center, left, right, top, bottom = [], [], [], [], []
+        for pt in self.points:
+            x, y = pt
+            if x_min <= x <= x_max and y_min <= y <= y_max:
+                center.append(pt)
+            elif self.is_in_trapezoid(x, y, cx, cy, square_size, trap_height, trap_expand):
+                if y < y_min:
+                    top.append(pt)
+                elif y > y_max:
+                    bottom.append(pt)
+            elif x < x_min:
+                left.append(pt)
+            elif x > x_max:
+                right.append(pt)
+        panels = [center, right, left, top, bottom]
+        sorted_panels = [self.sort_points_by_coordinates(panel) for panel in panels]
+        debug_img = self.cropped_img.copy()
+        colors = [(0, 255, 0), (0, 0, 255), (255, 0, 0), (255, 255, 0), (255, 0, 255)]
+        labels = ["Center", "Right", "Left", "Top", "Bottom"]
+        for pts, color, label in zip(sorted_panels, colors, labels):
+            for p in pts:
+                cv2.circle(debug_img, tuple(int(v) for v in p), 3, color, -1)
+            print(f"{label}: {len(pts)} pont")
+        self.show_image("Csoportosított pontok", debug_img)
+        return sorted_panels
+
+    def generate_panel_object_points(self, offset, grid_size=(8, 8), rotation_angles=(0, 0, 0)):
+        square_size = 40.0
+        objp = np.zeros((grid_size[0] * grid_size[1], 3), np.float32)
+        objp[:, :2] = np.mgrid[0:grid_size[0], 0:grid_size[1]].T.reshape(-1, 2) * square_size
+        center = np.array([(grid_size[0] - 1) * square_size / 2.0,
+                           (grid_size[1] - 1) * square_size / 2.0,
+                           0], dtype=np.float32)
+        theta_x, theta_y, theta_z = np.deg2rad(rotation_angles)
+        Rx = np.array([[1, 0, 0],
+                       [0, np.cos(theta_x), -np.sin(theta_x)],
+                       [0, np.sin(theta_x), np.cos(theta_x)]], dtype=np.float32)
+        Ry = np.array([[np.cos(theta_y), 0, np.sin(theta_y)],
+                       [0, 1, 0],
+                       [-np.sin(theta_y), 0, np.cos(theta_y)]], dtype=np.float32)
+        Rz = np.array([[np.cos(theta_z), -np.sin(theta_z), 0],
+                       [np.sin(theta_z), np.cos(theta_z), 0],
+                       [0, 0, 1]], dtype=np.float32)
+        R = Rz @ Ry @ Rx
+        objp -= center
+        objp = objp @ R.T
+        objp += center + np.array(offset, dtype=np.float32)
+        return objp.astype(np.float32).reshape(-1, 1, 3)
+
+    def trim_and_reshape_panel_points(self, sorted_panels, expected_shapes):
+        reshaped_panels = []
+        for panel_points, (rows, cols) in zip(sorted_panels, expected_shapes):
+            if len(panel_points) < rows * cols:
+                raise ValueError(f"Nem elég pont: szükséges {rows * cols}, de csak {len(panel_points)} van.")
+            panel_array = np.array(panel_points[:rows * cols], dtype=np.float32).reshape((rows, cols, 2))
+            ordered = panel_array.reshape(-1, 1, 2)
+            reshaped_panels.append(ordered)
+        return reshaped_panels
+
+    def draw_reprojection_error(self, imagePoints, objectPoints, rvecs, tvecs, K, D):
+        vis = self.cropped_img.copy()
+        colors = [(0, 255, 0), (0, 0, 255), (255, 0, 0), (0, 255, 255), (255, 0, 255)]
+        for i, (objp, imgp, rvec, tvec) in enumerate(zip(objectPoints, imagePoints, rvecs, tvecs)):
+            imgp_proj, _ = cv2.fisheye.projectPoints(objp, rvec, tvec, K, D)
+            for j in range(len(imgp)):
+                pt_measured = tuple(int(x) for x in imgp[j].ravel())
+                pt_projected = tuple(int(x) for x in imgp_proj[j].ravel())
+                cv2.circle(vis, pt_measured, 3, (255, 0, 0), -1)
+                cv2.circle(vis, pt_projected, 3, (0, 0, 255), 1)
+                cv2.line(vis, pt_measured, pt_projected, colors[i % len(colors)], 1)
+        self.show_image("Reprojection hibák", vis)
+
+    def plot_3d_object_points(self, objectPoints):
+        fig = plt.figure()
+        ax = fig.add_subplot(111, projection='3d')
+        colors = ['r', 'g', 'b', 'y', 'm']
+        for panel, color in zip(objectPoints, colors):
+            pts = panel.reshape(-1, 3)
+            ax.scatter(pts[:, 0], pts[:, 1], pts[:, 2], c=color, label=color)
+        ax.set_xlabel('X')
+        ax.set_ylabel('Y')
+        ax.set_zlabel('Z')
+        plt.legend()
+        plt.show()
+
+    def run_calibration(self):
+        self.read_image()
+        self.pre_processing_image()
+        self.find_contours()
+
+        assert len(self.points) == 176, f"Hiba: {len(self.points)} pont található, 176 helyett!"
+        imagePoints = self.group_points_by_position()
+        expected_shapes = [(8, 8), (6, 8), (6, 8), (2, 8), (2, 8)]
+        # imagePoints = self.trim_and_reshape_panel_points(imagePoints, expected_shapes)
+        imagePoints = [np.array(p, dtype=np.float64).reshape(-1, 1, 2) for p in imagePoints]
+
+        objectPoints = [
+            self.generate_panel_object_points((0, 0, 0), grid_size=(8, 8), rotation_angles=(0, 0, 0)),
+            self.generate_panel_object_points((0, 250, 0), grid_size=(8, 6), rotation_angles=(-90, 0, 0)),
+            self.generate_panel_object_points((0, -250, 0), grid_size=(8, 6), rotation_angles=(-90, 0, 180)),
+            self.generate_panel_object_points((250, 0, 0), grid_size=(2, 8), rotation_angles=(0, 90, 0)),
+            self.generate_panel_object_points((-250, 0, 0), grid_size=(2, 8), rotation_angles=(0, -90, 180))
+        ]
+
+        h, w = self.cropped_img.shape[:2]
+        K = np.array([[w, 0.0, w / 2], [0.0, h, h / 2], [0.0, 0.0, 1.0]], dtype=np.float64)
+        D = np.zeros((4, 1), dtype=np.float64)
+        rvecs, tvecs = [], []
+        flags = cv2.fisheye.CALIB_RECOMPUTE_EXTRINSIC
+        criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 100, 1e-6)
+
+        rms, K, D, rvecs, tvecs = cv2.fisheye.calibrate(
+            objectPoints, imagePoints, (w, h), K, D, rvecs, tvecs,
+            flags=flags, criteria=criteria
+        )
+
+        print(f"🌟 Reprojection error: {rms:.4f}")
+        print("📷 Kamera mátrix (K):\n", K)
+        print("🔧 Torzítási együtthatók (D):\n", D)
+
+        for i, (objp, imgp, rvec, tvec) in enumerate(zip(objectPoints, imagePoints, rvecs, tvecs)):
+            imgp_proj, _ = cv2.fisheye.projectPoints(objp, rvec, tvec, K, D)
+            err = cv2.norm(imgp, imgp_proj, cv2.NORM_L2) / len(imgp)
+            print(f"📌 Panel {i}: reprojection error = {err:.2f}")
+
+        self.draw_reprojection_error(imagePoints, objectPoints, rvecs, tvecs, K, D)
+        self.plot_3d_object_points(objectPoints)
+
+        undistorted = cv2.fisheye.undistortImage(self.cropped_img, K, D=D, Knew=K)
+        self.show_image("Torzításmentes kép", undistorted)
+
+if __name__ == "__main__":
+    fc = FisheyeCalibration(img_path="C854413F53802348_14_04_2025_12_13_30_EN.bmp")
+    fc.run_calibration()
