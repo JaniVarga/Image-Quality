@@ -11,7 +11,7 @@ class FisheyeCalibration:
         self.points = []
 
     def cropped_the_image(self, image):
-        return image[10:-10, 10:-10]
+        return image[10:-10, 100:-100]
 
     def show_image(self, windows_name, image):
         if image is None or image.size == 0:
@@ -32,37 +32,6 @@ class FisheyeCalibration:
         _, thresh = cv2.threshold(blurred, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
         kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
         self.pre_processed_image = cv2.erode(thresh, kernel, iterations=1)
-
-    # def find_contours(self):
-    #     contours, _ = cv2.findContours(self.pre_processed_image, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
-    #     debug_img = self.cropped_img.copy()
-    #     cx_img, cy_img = self.pre_processed_image.shape[1] // 2, self.pre_processed_image.shape[0] // 2
-    #     square_half = 210
-    #
-    #     x_valid_min = cx_img - square_half - 280
-    #     x_valid_max = cx_img + square_half + 280
-    #     y_valid_min = cy_img - square_half - 140
-    #     y_valid_max = cy_img + square_half + 130
-    #
-    #     for contour in contours:
-    #         approx = cv2.approxPolyDP(contour, 0.04 * cv2.arcLength(contour, True), True)
-    #         if len(approx) == 4 and cv2.isContourConvex(approx):
-    #             x, y, w_rect, h_rect = cv2.boundingRect(approx)
-    #             aspect_ratio = float(w_rect) / h_rect
-    #             area = cv2.contourArea(contour)
-    #             # if 0.6 < aspect_ratio < 1.6 and 50 < area < 12000:
-    #             if 0.6 < aspect_ratio < 1.6 and 500 < area < 15000:
-    #                 M = cv2.moments(approx)
-    #                 if M["m00"] != 0:
-    #                     cx = int(M["m10"] / M["m00"])
-    #                     cy = int(M["m01"] / M["m00"])
-    #                     if not (x_valid_min <= cx <= x_valid_max and y_valid_min <= cy <= y_valid_max):
-    #                         continue
-    #                     self.points.append((cx, cy))
-    #                     cv2.circle(debug_img, (cx, cy), 3, (0, 0, 255), -1)
-    #
-    #     print(f"🔍 Összesen {len(self.points)} középpont található.")
-    #     self.show_image("Középpontok megjelenítése", debug_img)
 
     def find_contours(self):
         contours, _ = cv2.findContours(self.pre_processed_image, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
@@ -223,6 +192,7 @@ class FisheyeCalibration:
         square_size = 50.0
         objp = np.zeros((grid_size[0] * grid_size[1], 3), np.float32)
         objp[:, :2] = np.mgrid[0:grid_size[0], 0:grid_size[1]].T.reshape(-1, 2) * square_size
+        objp[:, 1] = (grid_size[1] - 1) * square_size - objp[:, 1] # Ezt raktam bele pluszba
 
         center = np.array([(grid_size[0] - 1) * square_size / 2.0,
                            (grid_size[1] - 1) * square_size / 2.0,
@@ -238,7 +208,7 @@ class FisheyeCalibration:
         Rz = np.array([[np.cos(theta_z), -np.sin(theta_z), 0],
                        [np.sin(theta_z), np.cos(theta_z), 0],
                        [0, 0, 1]], dtype=np.float32)
-        # R = Rz @ Ry @ Rx
+
         R = Rx @ Ry @ Rz
 
         objp -= center
@@ -273,7 +243,7 @@ class FisheyeCalibration:
         plt.legend()
         plt.show()
 
-    def run_calibration(self):
+    def run_calibration_fisheye(self):
         self.read_image()
         self.pre_processing_image()
         self.find_contours()
@@ -282,32 +252,15 @@ class FisheyeCalibration:
             raise ValueError(f"Hiba: {len(self.points)} pont található, 160 helyett!")
 
         panels = self.group_points_by_position()
-        expected_shapes = [(8, 8), (4, 8), (4, 8), (2, 8), (2, 8)]
-        sorted_panels = []
-
-        # Középső panel (nem fordítjuk)
-        sorted_panels.append(
-            self.sort_points_by_coordinates(panels[0], 8, 8, flip_vertical=False, sort_by_y=True)) # sort_by = True akkor soronként rendez
-
-        # Jobb panel (példa, ha kell flip)
-        sorted_panels.append(
-            self.sort_points_by_coordinates(panels[1], 4, 8, flip_vertical=False, flip_horizontal=False, sort_by_y=False))
-
-        # Bal panel (példa, ha kell flip)
-        sorted_panels.append(
-            self.sort_points_by_coordinates(panels[2], 4, 8, flip_vertical=False, flip_horizontal=False, sort_by_y=False))
-
-        # Top panel - sorok sorrendjének megfordítása (alsó sor legyen első)
-        sorted_panels.append(
-            self.sort_points_by_coordinates(panels[3], 8, 2, flip_vertical=True, flip_horizontal=True, sort_by_y=False))
-
-        # Bottom panel - sorok sorrendjének megfordítása (alsó sor legyen első)
-        sorted_panels.append(
-            self.sort_points_by_coordinates(panels[4], 8, 2, flip_vertical=True, flip_horizontal=True, sort_by_y=False))
-
+        sorted_panels = [
+            self.sort_points_by_coordinates(panels[0], 8, 8, flip_vertical=True, flip_horizontal=True, sort_by_y=False),
+            self.sort_points_by_coordinates(panels[1], 4, 8, flip_vertical=True, flip_horizontal=True, sort_by_y=False),
+            self.sort_points_by_coordinates(panels[2], 4, 8, flip_vertical=True, flip_horizontal=True, sort_by_y=False),
+            self.sort_points_by_coordinates(panels[3], 8, 2, flip_vertical=True, flip_horizontal=True, sort_by_y=False),
+            self.sort_points_by_coordinates(panels[4], 8, 2, flip_vertical=True, flip_horizontal=True, sort_by_y=False)
+        ]
 
         imagePoints = [np.array(p, dtype=np.float32).reshape(-1, 1, 2) for p in sorted_panels]
-
         objectPoints = [
             self.generate_panel_object_points((0, 0, 0), grid_size=(8, 8), rotation_angles=(0, 0, 0)),
             self.generate_panel_object_points((0, 250, 150), grid_size=(8, 4), rotation_angles=(-90, 0, 0)),
@@ -317,14 +270,39 @@ class FisheyeCalibration:
         ]
 
         h, w = self.cropped_img.shape[:2]
-        K = np.array([[w, 0.0, w / 2], [0.0, h, h / 2], [0.0, 0.0, 1.0]], dtype=np.float64)
-        # D = np.zeros((5, 1), dtype=np.float64)
-        # Fish-eye torzítási együtthatók (a te értékeid alapján)
-        D_init = np.array([[0.334], [-.006], [0.014], [0.005]], dtype=np.float64)
+        image_size = (w, h)
 
-        rms, K, D, rvecs, tvecs = cv2.calibrateCamera(
-            objectPoints, imagePoints, (w, h), K, D_init,
-            flags=cv2.CALIB_USE_INTRINSIC_GUESS
+        # Inicializálás
+        K = np.eye(3, dtype=np.float64)
+        K[0, 0] = w
+        K[1, 1] = h
+        K[0, 2] = w / 2
+        K[1, 2] = h / 2
+
+        D = np.zeros((4, 1), dtype=np.float64)
+        rvecs = []
+        tvecs = []
+
+        flags = (
+                cv2.fisheye.CALIB_RECOMPUTE_EXTRINSIC +
+                # cv2.fisheye.CALIB_CHECK_COND +
+                cv2.fisheye.CALIB_FIX_SKEW
+        )
+
+        criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 200, 1e-6)
+
+        print("🔧 Kalibráció folyamatban...")
+
+        rms, K, D, rvecs, tvecs = cv2.fisheye.calibrate(
+            objectPoints,
+            imagePoints,
+            image_size,
+            K,
+            D,
+            rvecs,
+            tvecs,
+            flags=flags,
+            criteria=criteria
         )
 
         print(f"🌟 Reprojection error: {rms:.4f}")
@@ -336,14 +314,15 @@ class FisheyeCalibration:
             err = cv2.norm(imgp, imgp_proj, cv2.NORM_L2) / len(imgp)
             print(f"📌 Panel {i}: reprojection error = {err:.2f}")
 
+        # Vizualizáció (opcionális)
         self.draw_reprojection_error(imagePoints, objectPoints, rvecs, tvecs, K, D)
-        self.plot_3d_object_points(objectPoints)
 
-        undistorted = cv2.undistort(self.cropped_img, K, D.flatten())
-        self.show_image("Torzításmentes kép", undistorted)
+        new_K = cv2.fisheye.estimateNewCameraMatrixForUndistortRectify(K, D, (w, h), np.eye(3), balance=0.5)
+        map1, map2 = cv2.fisheye.initUndistortRectifyMap(K, D, np.eye(3), new_K, (w, h), cv2.CV_16SC2)
+        undistorted_img = cv2.remap(self.cropped_img, map1, map2, interpolation=cv2.INTER_LINEAR)
 
-if __name__ == "__main__":
-    fc = FisheyeCalibration(img_path="C854413F53803302_14_04_2025_14_15_41_EN.bmp")
-    # fc = FisheyeCalibration(img_path="C854413F53802348_14_04_2025_12_13_30_EN.bmp")
+        self.show_image("Torzításmentes kép", undistorted_img)
+        cv2.imwrite("undistorted.png", undistorted_img)
 
-    fc.run_calibration()
+calib = FisheyeCalibration("C854413F53803302_14_04_2025_14_15_41_EN.bmp")
+calib.run_calibration_fisheye()
