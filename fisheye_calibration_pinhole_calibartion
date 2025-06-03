@@ -1,0 +1,403 @@
+import cv2
+import numpy as np
+import matplotlib.pyplot as plt
+
+class FisheyeCalibration:
+    def __init__(self, img_path):
+        self.img_path = img_path
+        self.img = None
+        self.pre_processed_image = None
+        self.cropped_img = None
+        self.points = []
+
+    def cropped_the_image(self, image):
+        return image[10:-10, 120:-120]
+
+    def show_image(self, windows_name, image):
+        if image is None or image.size == 0:
+            return
+        cv2.imshow(windows_name, image)
+        cv2.waitKey(0)
+        cv2.destroyAllWindows()
+
+    def read_image(self):
+        self.img = cv2.imread(self.img_path, cv2.IMREAD_COLOR)
+        if self.img is None:
+            raise FileNotFoundError("Image not loaded or file path not correct.")
+        self.cropped_img = self.cropped_the_image(self.img)
+
+    def pre_processing_image(self):
+        gray = cv2.cvtColor(self.cropped_img, cv2.COLOR_BGR2GRAY)
+        blurred = cv2.GaussianBlur(gray, (7, 7), 0)
+        _, thresh = cv2.threshold(blurred, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+        kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
+        self.pre_processed_image = cv2.erode(thresh, kernel, iterations=1)
+
+    def find_contours(self):
+        contours, _ = cv2.findContours(self.pre_processed_image, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
+        debug_img = self.cropped_img.copy()
+        cx_img = self.pre_processed_image.shape[1] // 2
+        cy_img = self.pre_processed_image.shape[0] // 2
+
+        square_half = 210
+        x_valid_min = cx_img - square_half - 280
+        x_valid_max = cx_img + square_half + 280
+        y_valid_min = cy_img - square_half - 140
+        y_valid_max = cy_img + square_half + 130
+
+        points_left = []
+        points_right = []
+
+        for contour in contours:
+            approx = cv2.approxPolyDP(contour, 0.04 * cv2.arcLength(contour, True), True)
+            if len(approx) == 4 and cv2.isContourConvex(approx):
+                x, y, w_rect, h_rect = cv2.boundingRect(approx)
+                aspect_ratio = float(w_rect) / h_rect
+                area = cv2.contourArea(contour)
+
+                if 0.6 < aspect_ratio < 1.6 and 500 < area < 15000:
+                    M = cv2.moments(approx)
+                    if M["m00"] != 0:
+                        cx = int(M["m10"] / M["m00"])
+                        cy = int(M["m01"] / M["m00"])
+
+                        # Téglalap alapú pozíciós szűrés
+                        if not (x_valid_min <= cx <= x_valid_max and y_valid_min <= cy <= y_valid_max):
+                            continue
+
+                        # Ellipszis alapú szűrés
+                        a = 600  # vízszintes fél-tengely
+                        b = 400  # függőleges fél-tengely
+                        dx = cx - cx_img
+                        dy = cy - cy_img
+                        if (dx ** 2) / (a ** 2) + (dy ** 2) / (b ** 2) > 1:
+                            continue
+
+                        # Pontokat balra vagy jobbra gyűjtjük
+                        if cx < cx_img:
+                            points_left.append((cx, cy))
+                        else:
+                            points_right.append((cx, cy))
+
+        # Kiválasztjuk a középponthoz legközelebbi 80-80 pontot (ha annyi van)
+        def closest_to_center(points, center_x):
+            points_sorted = sorted(points, key=lambda p: abs(p[0] - center_x))
+            return points_sorted[:80]
+
+        points_left = closest_to_center(points_left, cx_img)
+        points_right = closest_to_center(points_right, cx_img)
+
+        self.points = points_left + points_right
+
+        # Debug kirajzolás
+        for (cx, cy) in self.points:
+            cv2.circle(debug_img, (cx, cy), 3, (0, 0, 255), -1)
+
+        print(f"🔍 Összesen {len(self.points)} középpont található.")
+        self.show_image("Középpontok megjelenítése", debug_img)
+
+    def sort_points_by_coordinates(self, points, rows, cols, flip_vertical=False, flip_horizontal=False,
+                                   sort_by_y=True):
+        if points is None or len(points) != rows * cols:
+            print(f"⚠️ Hibás pontszám vagy None. Várt: {rows * cols}, Kapott: {len(points) if points else 0}")
+            return []
+
+        primary_sort = 1 if sort_by_y else 0  # y vagy x
+        secondary_sort = 0 if sort_by_y else 1  # x vagy y
+
+        # Pontok rendezése primary szerint (y vagy x)
+        points_sorted = sorted(points, key=lambda p: p[primary_sort])
+
+        rows_list = []
+        for i in range(rows):
+            row_pts = points_sorted[i * cols:(i + 1) * cols]
+            row_sorted = sorted(row_pts, key=lambda p: p[secondary_sort])
+            if flip_horizontal:
+                row_sorted = row_sorted[::-1]
+            rows_list.append(row_sorted)
+
+        if flip_vertical:
+            if rows == 2:
+                rows_list[0], rows_list[1] = rows_list[1], rows_list[0]
+            else:
+                rows_list = rows_list[::-1]
+
+        # Vizualizáció
+        debug_img = self.cropped_img.copy()
+        font = cv2.FONT_HERSHEY_SIMPLEX
+        for row_idx, row in enumerate(rows_list):
+            for col_idx, pt in enumerate(row):
+                x, y = int(pt[0]), int(pt[1])
+                cv2.circle(debug_img, (x, y), 4, (0, 255, 0), -1)
+                cv2.putText(debug_img, f"{row_idx},{col_idx}", (x + 5, y - 5), font, 0.5, (0, 255, 255), 1)
+        self.show_image("Rendezett pontok sorszámozva", debug_img)
+
+        sorted_points = np.array([pt for row in rows_list for pt in row], dtype=np.float32)
+        return sorted_points
+
+
+    def is_in_trapezoid(self, x, y, cx, cy, square_size, height, expand):
+        y_top = cy - square_size // 2
+        y_bottom = cy + square_size // 2
+        if y_top - height <= y < y_top:
+            ratio = (y_top - y) / height
+            half_width = (square_size / 2) + ratio * expand
+            return cx - half_width <= x <= cx + half_width
+        elif y_bottom < y <= y_bottom + height:
+            ratio = (y - y_bottom) / height
+            half_width = (square_size / 2) + ratio * expand
+            return cx - half_width <= x <= cx + half_width
+        return False
+
+    def group_points_by_position(self):
+        h, w = self.cropped_img.shape[:2]
+        cx, cy = w // 2, h // 2
+        square_size = 420
+        trap_height = 180
+        trap_expand = 180
+        x_min = cx - square_size // 2
+        x_max = cx + square_size // 2
+        y_min = cy - square_size // 2
+        y_max = cy + square_size // 2
+
+        center, left, right, top, bottom = [], [], [], [], []
+        for pt in self.points:
+            x, y = pt
+            if x_min <= x <= x_max and y_min <= y <= y_max:
+                center.append(pt)
+            elif self.is_in_trapezoid(x, y, cx, cy, square_size, trap_height, trap_expand):
+                if y < y_min:
+                    top.append(pt)
+                elif y > y_max:
+                    bottom.append(pt)
+            elif x < x_min:
+                left.append(pt)
+            elif x > x_max:
+                right.append(pt)
+
+        panels = [center, right, left, top, bottom]
+        debug_img = self.cropped_img.copy()
+        colors = [(0, 255, 0), (0, 0, 255), (255, 0, 0), (255, 255, 0), (255, 0, 255)]
+        labels = ["Center", "Right", "Left", "Top", "Bottom"]
+
+        for pts, color, label in zip(panels, colors, labels):
+            for p in pts:
+                cv2.circle(debug_img, tuple(int(v) for v in p), 3, color, -1)
+            print(f"{label}: {len(pts)} pont")
+
+        self.show_image("Csoportosított pontok", debug_img)
+        return panels
+
+    def generate_panel_object_points(self, offset, grid_size=(8, 8), rotation_angles=(0, 0, 0)):
+        square_size = 50.0
+        objp = np.zeros((grid_size[0] * grid_size[1], 3), np.float32)
+        objp[:, :2] = np.mgrid[0:grid_size[0], 0:grid_size[1]].T.reshape(-1, 2) * square_size
+        objp[:, 1] = (grid_size[1] - 1) * square_size - objp[:, 1] # Ezt raktam bele pluszba
+
+        center = np.array([(grid_size[0] - 1) * square_size / 2.0,
+                           (grid_size[1] - 1) * square_size / 2.0,
+                           0], dtype=np.float32)
+
+        theta_x, theta_y, theta_z = np.deg2rad(rotation_angles)
+        Rx = np.array([[1, 0, 0],
+                       [0, np.cos(theta_x), -np.sin(theta_x)],
+                       [0, np.sin(theta_x), np.cos(theta_x)]], dtype=np.float32)
+        Ry = np.array([[np.cos(theta_y), 0, np.sin(theta_y)],
+                       [0, 1, 0],
+                       [-np.sin(theta_y), 0, np.cos(theta_y)]], dtype=np.float32)
+        Rz = np.array([[np.cos(theta_z), -np.sin(theta_z), 0],
+                       [np.sin(theta_z), np.cos(theta_z), 0],
+                       [0, 0, 1]], dtype=np.float32)
+
+        R = Rx @ Ry @ Rz
+
+        objp -= center
+        objp = objp @ R.T
+
+        objp += center + np.array(offset, dtype=np.float32)
+        return objp.astype(np.float32).reshape(-1, 1, 3)
+
+    def draw_reprojection_error(self, imagePoints, objectPoints, rvecs, tvecs, K, D):
+        vis = self.cropped_img.copy()
+        colors = [(0, 255, 0), (0, 0, 255), (255, 0, 0), (0, 255, 255), (255, 0, 255)]
+        for i, (objp, imgp, rvec, tvec) in enumerate(zip(objectPoints, imagePoints, rvecs, tvecs)):
+            imgp_proj, _ = cv2.projectPoints(objp, rvec, tvec, K, D)
+            for j in range(len(imgp)):
+                pt_measured = tuple(int(x) for x in imgp[j].ravel())
+                pt_projected = tuple(int(x) for x in imgp_proj[j].ravel())
+                cv2.circle(vis, pt_measured, 3, (255, 0, 0), -1)
+                cv2.circle(vis, pt_projected, 3, (0, 0, 255), 1)
+                cv2.line(vis, pt_measured, pt_projected, colors[i % len(colors)], 1)
+        self.show_image("Reprojection hibák", vis)
+
+    def plot_3d_object_points(self, objectPoints):
+        fig = plt.figure()
+        ax = fig.add_subplot(111, projection='3d')
+        colors = ['r', 'g', 'b', 'y', 'm']
+        for panel, color in zip(objectPoints, colors):
+            pts = panel.reshape(-1, 3)
+            ax.scatter(pts[:, 0], pts[:, 1], pts[:, 2], c=color, label=color)
+        ax.set_xlabel('X')
+        ax.set_ylabel('Y')
+        ax.set_zlabel('Z')
+        plt.legend()
+        plt.show()
+
+    def fit_radial_distortion_polynomial(self, imagePoints, objectPoints, rvecs, tvecs, cx, cy):
+        distorted_r = []
+        ideal_r = []
+
+        for imgp, objp, rvec, tvec in zip(imagePoints, objectPoints, rvecs, tvecs):
+            # Ideális (torzításmentes) pontok kiszámítása
+            imgp_proj, _ = cv2.projectPoints(objp, rvec, tvec, np.eye(3), np.zeros((5, 1)))
+
+            for p_dist, p_ideal in zip(imgp.squeeze(), imgp_proj.squeeze()):
+                dx_d = p_dist[0] - cx
+                dy_d = p_dist[1] - cy
+                dx_i = p_ideal[0] - cx
+                dy_i = p_ideal[1] - cy
+
+                rd = np.sqrt(dx_d ** 2 + dy_d ** 2)
+                ri = np.sqrt(dx_i ** 2 + dy_i ** 2)
+
+                if rd > 1e-3:
+                    distorted_r.append(rd)
+                    ideal_r.append(ri)
+
+        distorted_r = np.array(distorted_r)
+        ideal_r = np.array(ideal_r)
+
+        # Fit negyedfokú polinom: ri = rd + k1 * rd^3 + k2 * rd^5 + k3 * rd^7 + k4 * rd^9
+        A = np.vstack([
+            distorted_r ** 3,
+            distorted_r ** 5,
+            distorted_r ** 7,
+            distorted_r ** 9
+        ]).T
+        b = ideal_r - distorted_r
+
+        coeffs, _, _, _ = np.linalg.lstsq(A, b, rcond=None)
+        print("📐 Illesztett torzítási együtthatók (negyedfokú):", coeffs)
+        return coeffs
+
+    def undistort_points_with_polynomial(self, distorted_pts, K, D, max_iter=5):
+        """
+        Pontok torzításmentesítése egy nem-lineáris polinomiális modell alapján.
+        - distorted_pts: torzított képpontok (N x 1 x 2)
+        - K: kamera mátrix
+        - D: torzítási együtthatók (k1, k2, k3, k4)
+        - max_iter: iterációk száma a visszafejtéshez
+        """
+        fx, fy = K[0, 0], K[1, 1]
+        cx, cy = K[0, 2], K[1, 2]
+        k1, k2, k3, k4 = D.ravel()[:4]
+
+        undistorted = []
+
+        for pt in distorted_pts.reshape(-1, 2):
+            x_d = (pt[0] - cx) / fx
+            y_d = (pt[1] - cy) / fy
+            x_u, y_u = x_d, y_d
+
+            for _ in range(max_iter):
+                r2 = x_u ** 2 + y_u ** 2
+                radial = 1 + k1 * r2 + k2 * r2 ** 2 + k3 * r2 ** 3 + k4 * r2 ** 4
+                x_u = x_d / radial
+                y_u = y_d / radial
+
+            x_img = x_u * fx + cx
+            y_img = y_u * fy + cy
+            undistorted.append([x_img, y_img])
+
+        return np.array(undistorted, dtype=np.float32).reshape(-1, 1, 2)
+
+
+    def run_calibration(self):
+        self.read_image()
+        self.pre_processing_image()
+        self.find_contours()
+
+        if len(self.points) != 160:
+            raise ValueError(f"Hiba: {len(self.points)} pont található, 160 helyett!")
+
+        panels = self.group_points_by_position()
+        expected_shapes = [(8, 8), (4, 8), (4, 8), (2, 8), (2, 8)]
+        sorted_panels = []
+
+        # Középső panel (nem fordítjuk)
+        sorted_panels.append(
+            self.sort_points_by_coordinates(panels[0], 8, 8, flip_vertical=True, flip_horizontal=True, sort_by_y=False)) # sort_by = True akkor soronként rendez
+
+        # Jobb panel (példa, ha kell flip)
+        sorted_panels.append(
+            self.sort_points_by_coordinates(panels[1], 4, 8, flip_vertical=True, flip_horizontal=True, sort_by_y=False))
+
+        # Bal panel (példa, ha kell flip)
+        sorted_panels.append(
+            self.sort_points_by_coordinates(panels[2], 4, 8, flip_vertical=True, flip_horizontal=True, sort_by_y=False))
+
+        # Top panel - sorok sorrendjének megfordítása (alsó sor legyen első)
+        sorted_panels.append(
+            self.sort_points_by_coordinates(panels[3], 8, 2, flip_vertical=True, flip_horizontal=True, sort_by_y=False))
+
+        # Bottom panel - sorok sorrendjének megfordítása (alsó sor legyen első)
+        sorted_panels.append(
+            self.sort_points_by_coordinates(panels[4], 8, 2, flip_vertical=True, flip_horizontal=True, sort_by_y=False))
+
+        imagePoints = [np.array(p, dtype=np.float32).reshape(-1, 1, 2) for p in sorted_panels]
+
+        objectPoints = [
+            self.generate_panel_object_points((0, 0, 0), grid_size=(8, 8), rotation_angles=(0, 0, 0)),
+            self.generate_panel_object_points((0, 250, 150), grid_size=(8, 4), rotation_angles=(-90, 0, 0)),
+            self.generate_panel_object_points((0, -250, 150), grid_size=(8, 4), rotation_angles=(-90, 0, 180)),
+            self.generate_panel_object_points((250, 0, 150), grid_size=(2, 8), rotation_angles=(0, 90, 0)),
+            self.generate_panel_object_points((-250, 0, 150), grid_size=(2, 8), rotation_angles=(0, -90, 0))
+        ]
+
+        # print(f"Objects_points:{objectPoints}\nImage Points:{imagePoints}")
+        h, w = self.cropped_img.shape[:2]
+        print(h,w)
+
+        K = np.array([[w, 0.0, w / 2], [0.0, h, h / 2], [0.0, 0.0, 1.0]], dtype=np.float64)
+        # D = np.zeros((5, 1), dtype=np.float64)
+        # Fish-eye torzítási együtthatók (a te értékeid alapján)
+        # D_init = np.array([[0.334], [-.006], [0.014], [0.005]], dtype=np.float64)
+        D_init = np.zeros((4, 1), dtype=np.float64)
+
+        flags = (cv2.CALIB_USE_INTRINSIC_GUESS
+                 # cv2.CALIB_FIX_K3
+                 )
+
+        rms, K, D, rvecs, tvecs = cv2.calibrateCamera(
+            objectPoints, imagePoints, (w, h), K, D_init,
+            flags=flags
+        )
+
+        print(f"🌟 Reprojection error: {rms:.4f}")
+        print("📷 Kamera mátrix (K):\n", K)
+        print("🔧 Torzítási együtthatók (D):\n", D)
+
+        for i, (objp, imgp, rvec, tvec) in enumerate(zip(objectPoints, imagePoints, rvecs, tvecs)):
+            imgp_proj, _ = cv2.projectPoints(objp, rvec, tvec, K, D)
+            err = cv2.norm(imgp, imgp_proj, cv2.NORM_L2) / len(imgp)
+            print(f"📌 Panel {i}: reprojection error = {err:.2f}")
+
+        # for i, (objp, imgp) in enumerate(zip(objectPoints, imagePoints)):
+        #     success, rvec, tvec = cv2.solvePnP(objp, imgp, K, D, flags=cv2.SOLVEPNP_ITERATIVE)
+        #     if success:
+        #         print(f"🎯 Panel {i}: solvePnP rotációs vektor = {rvec.ravel()}")
+        #         print(f"🎯 Panel {i}: solvePnP transzlációs vektor = {tvec.ravel()}")
+        #     else:
+        #         print(f"❌ Panel {i}: solvePnP nem sikerült")
+
+        self.draw_reprojection_error(imagePoints, objectPoints, rvecs, tvecs, K, D)
+        self.plot_3d_object_points(objectPoints)
+
+        undistorted = cv2.undistort(self.cropped_img, K, D.flatten())
+        self.show_image("Torzításmentes kép", undistorted)
+
+if __name__ == "__main__":
+    fc = FisheyeCalibration(img_path="C854413F53803302_14_04_2025_14_15_41_EN.bmp")
+    # fc = FisheyeCalibration(img_path="C854413F53802348_14_04_2025_12_13_30_EN.bmp")
+
+    fc.run_calibration()
