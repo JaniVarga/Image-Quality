@@ -1,0 +1,259 @@
+import cv2
+import numpy as np
+import matplotlib.pyplot as plt
+
+class BlemishCheck:
+    def __init__(self, img_path):
+        self.img_path = img_path
+
+    def show_image(self, name_of_the_window ,img_to_show):
+        cv2.imshow(name_of_the_window, img_to_show)
+        cv2.waitKey(0)
+        cv2.destroyAllWindows()
+
+    def load_image(self):
+        self.img = cv2.imread(self.img_path, cv2.IMREAD_COLOR)
+        if self.img is None:
+            print("Error: image not found or cannot be loaded. Please check the path")
+            return
+        img_lab = cv2.cvtColor(self.img, cv2.COLOR_BGR2LAB)
+        l_channel, a_channel, b_channel = cv2.split(img_lab)
+        mean_luminance = l_channel.mean()
+        target_luminance = 200
+        if mean_luminance != 0:
+            scale_factor = target_luminance / mean_luminance
+        else:
+            scale_factor = 1  # ha nulla, ne skálázzunk
+        l_channel_scaled = l_channel.astype(np.float32)
+        l_channel_scaled *= scale_factor
+        l_channel_scaled = np.clip(l_channel_scaled, 0, 255).astype(np.uint8)
+        lab_modified = cv2.merge((l_channel_scaled, a_channel, b_channel))
+        self.result_img = cv2.cvtColor(lab_modified, cv2.COLOR_LAB2BGR)
+        self.img = self.result_img
+        self.img = cv2.cvtColor(self.img, cv2.COLOR_BGR2GRAY)
+
+        return self.img
+
+    def resize_image(self, image):
+        scaled = cv2.resize(image, (0, 0), fx=1 / 2, fy=1 / 2, interpolation=cv2.INTER_AREA)
+        return scaled
+
+    def cutting_the_edge(self, image):
+        return image[190:-190, 190:-190]
+
+    def directional_median(self, img, direction, ksize=3):
+        """
+        Egy irányú median filter (direction: 0, 45, 90, 135 fok)
+        """
+        pad = ksize // 2
+        padded = cv2.copyMakeBorder(img, pad, pad, pad, pad, cv2.BORDER_REFLECT)
+        h, w = img.shape
+        out = np.zeros_like(img)
+
+        # irányvektorok
+        if direction == 0:  # vízszintes
+            offsets = [(0, -i) for i in range(pad, 0, -1)] + [(0, 0)] + [(0, i) for i in range(1, pad + 1)]
+        elif direction == 45:  # főátló ↗
+            offsets = [(-i, i) for i in range(pad, 0, -1)] + [(0, 0)] + [(i, -i) for i in range(1, pad + 1)]
+        elif direction == 90:  # függőleges
+            offsets = [(-i, 0) for i in range(pad, 0, -1)] + [(0, 0)] + [(i, 0) for i in range(1, pad + 1)]
+        elif direction == 135:  # mellékátló ↘
+            offsets = [(-i, -i) for i in range(pad, 0, -1)] + [(0, 0)] + [(i, i) for i in range(1, pad + 1)]
+        else:
+            raise ValueError("Irány csak 0, 45, 90 vagy 135 fok lehet")
+
+        for y in range(h):
+            for x in range(w):
+                values = [padded[y + dy + pad, x + dx + pad] for dy, dx in offsets]
+                out[y, x] = np.median(values)
+
+        return out
+
+    def multidirectional_median_filter(self, img, ksize=19):
+        directions = [0, 45, 90, 135]
+        results = [self.directional_median(img, d, ksize) for d in directions]
+        avg_result = np.mean(results, axis=0)
+        difference = avg_result - img
+        return avg_result.astype(np.uint8), difference.astype(np.int16)
+
+
+    def adaptive_threshold(self, image):
+        # thresholdType ha INV mar kesz is, helyes mask, nem kell negalni!
+        bilateral = cv2.bilateralFilter(image, d=19, sigmaColor=3.5, sigmaSpace=35)
+        self.show_image("Bilateral", bilateral)
+        return cv2.adaptiveThreshold(bilateral,maxValue=255,adaptiveMethod=cv2.ADAPTIVE_THRESH_MEAN_C,
+                                                        thresholdType=cv2.THRESH_BINARY_INV,
+                                                        blockSize=45, #55
+                                                        C=7)
+
+    def advanced_morphology(self, image):
+        kernel = cv2.getStructuringElement(cv2.MORPH_CROSS, (5,5))
+        opening = cv2.morphologyEx(image, cv2.MORPH_OPEN, kernel)
+        kernel = cv2.getStructuringElement(cv2.MORPH_CROSS, (7, 7))
+        closing = cv2.morphologyEx(opening, cv2.MORPH_CLOSE, kernel)
+
+        # median = cv2.GaussianBlur(closing, ksize=(5,5), sigmaX=0)
+        return closing
+
+    def add_extra_space_for_measurement(self, img):
+        # Itt negaltam + rá is mentett az eredeti img-re is!!!img, img miatt!
+        # mask = cv2.bitwise_not(img, img)
+        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (13,13))
+        dilated_mask = cv2.dilate(img, kernel)
+        return dilated_mask
+
+    def apply_the_mask(self,img, mask):
+        return cv2.bitwise_and(img, img, mask=mask)
+
+
+    def separate_masks(self, mask, resized_image):
+        contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        masks = []
+        if len(contours) != 0:
+            print(f"Number of particles found: \n")
+
+            for i,contour in enumerate(contours):
+                if cv2.contourArea(contour) > 1:
+                    area = cv2.contourArea(contour)
+                    print(f"No.{i} contour area:{area}")
+
+                    # Geometriai középpont
+                    M = cv2.moments(contour)
+                    if M["m00"] == 0:
+                        continue
+                    cx = int(M["m10"] / M["m00"])
+                    cy = int(M["m01"] / M["m00"])
+
+                    # Kép középpont és irányvektor
+                    h, w = mask.shape[:2]
+                    origin = (w // 2, h // 2)
+                    vec = (origin[0] - cx, origin[1] - cy)
+
+                    # Kontúr pontok szűrése (csak középpont felőli oldal)
+                    filtered_points = []
+                    for point in contour:
+                        px, py = point[0]
+                        v = (px - cx, py - cy)
+                        if v[0] * vec[0] + v[1] * vec[1] > 0:
+                            filtered_points.append([px, py])
+
+                    if filtered_points:
+                        filtered_points = np.array(filtered_points, dtype=np.int32)
+                        mask = np.zeros_like(mask)
+                        cv2.fillPoly(mask, [filtered_points], 255)
+
+                    # mask = np.zeros(shape=(resized_image.shape[0], resized_image.shape[1]), dtype=np.uint8)
+                    # cv2.fillPoly(mask, pts=[contour], color=(255, 255, 255))
+                    masks.append(mask)
+                    self.show_image(f"{i}. mask", mask)
+        else:
+            print("No particle found on the image")
+        return masks
+
+    def csf_curve(self, img, mask, freque):
+
+        contrasts = []
+        for m,f in zip(mask, freque):
+            image = self.apply_the_mask(img, m)
+            self.show_image("Maskolt képek", image)
+            pixels = image[image > 0]  # csak a maszkolt terület
+
+            l_max = float(np.max(pixels))
+            l_min = float(np.min(pixels))
+            contrast = np.abs(((l_max + l_min) / l_max - l_min))
+            print(contrast)
+            contrast_sensitivity_scaling_factor = 1
+            scaling_factor = 500  # contrast_sensitivity_function_scaling_factor
+            contrast_sensitivity_scaled = contrast * contrast_sensitivity_scaling_factor
+            contrast_sensitivity_limit = (
+                    scaling_factor
+                    * 2.6
+                    * (0.0192 + 0.144 * f)
+                    * np.exp(-1 * (0.144 * f) ** 1.1)
+            )
+            contrasts.append(contrast_sensitivity_scaled)
+
+        return contrasts
+
+    def calculate_blemish_area_to_spatial_frequency(self, mask):
+        cycles_per_degree_final = []
+        contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        if len(contours) == 0:
+            print("No particle found on the image")
+            return []
+
+        else:
+            print(f"Number of particles found: \n")
+
+            for i, contour in enumerate(contours):
+                if cv2.contourArea(contour) > 1:
+                    area = cv2.contourArea(contour)
+                    print(f"No.{i} contour area:{area}")
+                    diameter = 2 * np.sqrt(area / np.pi)
+                    pixels_per_cycle_factor = 2
+                    pixels_per_cycle = diameter / pixels_per_cycle_factor
+                    rotation_of_screen = 0 # per m
+                    image_distance = 1 # per m
+                    image_width = 0.1
+                    angle_subtended_by_image_degrees = (
+                            2
+                            * (360 / (2 * np.pi))
+                            * np.atan(
+                        (np.cos(rotation_of_screen * np.pi / 180) * (image_width / 2))
+                        / image_distance))
+                    pixel_width_of_image = mask.shape[1]
+                    pixel_per_degree = pixel_width_of_image / angle_subtended_by_image_degrees
+                    cycles_per_degree = pixel_per_degree / pixels_per_cycle
+                    spatial_frequency_scaling_factor = 1
+                    cycles_per_degree_scaled = cycles_per_degree * spatial_frequency_scaling_factor
+                    cycles_per_degree_final.append(cycles_per_degree_scaled)
+
+                else:
+                    print("No particle found on the image")
+
+        return cycles_per_degree_final
+
+    def show_csf_curve(self, blemish, freq, original_image, morp):
+
+        f_range = np.linspace(0.01, 30, 500)
+        csf_curve = (
+                500 * 2.6 * (0.0192 + 0.144 * f_range)
+                * np.exp(-1 * (0.144 * f_range) ** 1.1)
+        )
+        ax1 = plt.subplot2grid((2, 2), (0, 0), colspan=2)
+
+        # 2. sor - 2 oszlop
+        ax2 = plt.subplot2grid((2, 2), (1, 0))
+        ax3 = plt.subplot2grid((2, 2), (1, 1))
+
+        ax1.plot(f_range, csf_curve, color="blue", linewidth=2, label="CSF referencia görbe")
+        ax1.scatter(freq, blemish, color="red", s=80, label="Mért blemish pontok", zorder=3)
+        ax1.set_title("Contrast Sensitivity Function (CSF)")
+        ax1.set_xlabel("Spatial Frequency (Cycles per Degree)")
+        ax1.set_ylabel("Contrast Sensitivity")
+        ax1.grid(True, alpha=0.3)
+        ax1.legend()
+        ax2.imshow(original_image, cmap="gray")
+        ax3.imshow(morp, cmap="gray")
+        plt.show()
+
+
+    def find_blemish(self):
+        img = self.load_image()
+        cutted_image = self.cutting_the_edge(img)
+        resized_image = self.resize_image(cutted_image)
+        filtered, diff = self.multidirectional_median_filter(resized_image, ksize=3)
+        self.show_image("Filtered Image", filtered)
+        thresh = self.adaptive_threshold(filtered)
+        self.show_image("Threshold", thresh)
+        morp = self.advanced_morphology(thresh)
+        self.show_image("Morph", morp)
+        masks = self.add_extra_space_for_measurement(morp)
+        self.show_image("All masks together", masks)
+        list_of_masks = self.separate_masks(mask=masks, resized_image=resized_image)
+        fre = self.calculate_blemish_area_to_spatial_frequency(mask=morp)
+        blemish =self.csf_curve(resized_image, list_of_masks, fre)
+        self.show_csf_curve(blemish, fre, filtered, morp)
+
+blemish = BlemishCheck(img_path="Rekis_Particles.bmp")
+blemish.find_blemish()
