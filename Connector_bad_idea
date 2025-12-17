@@ -1,0 +1,93 @@
+import cv2
+import numpy as np
+import matplotlib.pyplot as plt
+
+# Kép és ROI
+img = cv2.imread(r"C:\Users\jvarga1\PycharmProjects\Flori_jatek\ok\C862814F54665282_Pass_Valtua_AOI1_Socket1-Hirose_3_2025-12-08_10-25-43.tif")
+roi = img[840:1020, 960:1680].copy()
+x_offset, y_offset = 960, 840
+
+# Előfeldolgozás R csatorna kiválasztása:
+red_channel = roi[:,:,2]
+
+# SHADING / LIGHTING CORRECTION
+# Nagy Gauss-blur → háttér eltávolítás
+bg = cv2.GaussianBlur(red_channel, (101, 101), 50)
+shade_corrected = cv2.subtract(red_channel, bg)
+shade_corrected = cv2.normalize(shade_corrected, None, 0, 255, cv2.NORM_MINMAX)
+
+# Red channel — CLAHE ("adaptiv" kontraszfokozás)
+clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8,8))
+r_clahe = clahe.apply(shade_corrected)
+
+# Gauss blur (sigma=3 → kernel=21x21)
+blur = cv2.GaussianBlur(r_clahe, (21,21), 3)
+
+# Top-hat kiemelés (Háttér (lassú változás) eltávolítás + kicsi világos részek erős kiemelése”)
+kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (15,15))
+tophat = cv2.morphologyEx(blur, cv2.MORPH_TOPHAT, kernel)
+
+plt.imshow(tophat)
+plt.title("Tophat kiemelés után")
+
+# MSER
+mser = cv2.MSER_create(delta=2, min_area=50, max_area=2000)
+mser.setMaxVariation(0.15)
+mser.setMinDiversity(0.2)
+
+# Detektálás
+regions, _ = mser.detectRegions(tophat)
+print(f"Régiók száma: {len(regions)}")
+
+# Vizualizáció pontonként
+img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+plt.figure(figsize=(14,10))
+plt.imshow(img_rgb)
+plt.title("Minden csatlakozó - bright mód, S+Red csatorna")
+
+for region in regions:
+    pts = np.array(region)
+    plt.scatter(pts[:,0]+x_offset, pts[:,1]+y_offset, s=1, color='lime')
+
+plt.axis('off')
+plt.show()
+
+zeros = np.zeros((roi.shape[0], roi.shape[1]), dtype=np.uint8)
+for region in regions:
+    pts = np.array(region)
+    zeros[pts[:,1],pts[:,0]] = 255
+
+
+# Read images in grayscale
+img_2 = cv2.imread(r"C:\Users\jvarga1\PycharmProjects\Flori_jatek\nok\C862814F54662462_Fail_Valtua_AOI1_Socket1-Hirose_2_2025-12-08_08-47-08.tif")
+img_2_gray = cv2.cvtColor(img_2, cv2.COLOR_BGR2GRAY)
+roi_gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
+
+print(f"Image shape: {img_2_gray.shape}, Image type: {img_2.dtype}")
+print(f"Template shape: {roi_gray.shape}, Template shape: {roi.dtype}")
+
+# Template matching
+result = cv2.matchTemplate(img_2_gray, roi_gray, cv2.TM_CCORR_NORMED, mask=zeros)
+# (image_height - template_height + 1, image_width - template_width + 1)
+# = (1944-180+1, 2592-720+1)
+# = (1765, 1873)
+print("Result shape:", result.shape)
+
+# Display the result
+plt.imshow(result, cmap='gray')
+plt.colorbar()
+plt.show()
+
+min_val, max_val, min_loc, max_loc = cv2.minMaxLoc(result)
+print("Max correlation value:", max_val)
+print("Top-left corner of best match:", max_loc)
+
+top_left = max_loc
+bottom_right = (top_left[0] + roi.shape[1], top_left[1] + roi.shape[0])
+img_display = img_2.copy()
+cv2.rectangle(img_display, top_left, bottom_right, (0, 0, 255), 2)  # piros téglalap
+
+# Megjelenítés matplotlib-tel
+plt.imshow(cv2.cvtColor(img_display, cv2.COLOR_BGR2RGB))
+plt.title("Template Matching Result")
+plt.show()
