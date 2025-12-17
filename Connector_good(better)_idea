@@ -1,0 +1,150 @@
+import cv2
+import numpy as np
+import math
+import matplotlib.pyplot as plt
+
+# ===============================
+# PARAMÉTEREK
+# ===============================
+PIXEL_SIZE_UM = 10.0
+MATCH_ACCURACY_UM = 135
+MATCH_DISTANCE_MM = 3.0
+MATCH_ANGLE_DEG = 5.0
+MIN_MATCH_RATIO = 0.6
+
+# ROI (recipe)
+# ROIX, ROIY, ROIW, ROIH = 503, 727, 1555, 942
+
+# ===============================
+# SEGÉDFÜGGVÉNYEK
+# ===============================
+def extract_mser_points(gray):
+    blur = cv2.GaussianBlur(gray, (21,21), 3)
+    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (15,15))
+    tophat = cv2.morphologyEx(blur, cv2.MORPH_TOPHAT, kernel)
+    plt.imshow(tophat)
+    plt.show()
+
+    mser = cv2.MSER_create(
+        delta=1,
+        min_area=50,
+        max_area=3000
+    )
+    regions, _ = mser.detectRegions(tophat)
+
+    pts = []
+    for r in regions:
+        c = np.mean(r, axis=0)
+
+        pts.append(c)
+
+    return np.array(pts, dtype=np.float32)
+
+def centroid(pts):
+    return pts.mean(axis=0)
+
+def apply_transform(pts, dx, dy, angle_deg):
+    a = math.radians(angle_deg)
+    R = np.array([
+        [math.cos(a), -math.sin(a)],
+        [math.sin(a),  math.cos(a)]
+    ])
+    return (pts @ R.T) + np.array([dx, dy])
+
+def match_points(ref, test, max_dist_px):
+    count = 0
+    dists = []
+    for p in ref:
+        dist = np.linalg.norm(test - p, axis=1)
+        dmin = dist.min()
+        if dmin < max_dist_px:
+            count += 1
+            dists.append(dmin)
+    return count, np.mean(dists) if dists else np.inf
+
+# ===============================
+# 1. KÉPEK
+# ===============================
+img_ok = cv2.imread(
+    r"C:\Users\jvarga1\PycharmProjects\Flori_jatek\ok\C862814F54665282_Pass_Valtua_AOI1_Socket1-Hirose_3_2025-12-08_10-25-43.tif",
+    cv2.IMREAD_GRAYSCALE
+)
+
+img_fail = cv2.imread(
+    r"C:\Users\jvarga1\PycharmProjects\Flori_jatek\nok\C862814F54662462_Fail_Valtua_AOI1_Socket1-Hirose_2_2025-12-08_08-47-08.tif",
+    cv2.IMREAD_GRAYSCALE
+)
+
+roi_ok = img_ok[840:1020, 960:1680].copy()
+roi_fail = img_fail[840:1020, 960:1680].copy()
+
+# ===============================
+# 2. MSER PONTOK
+# ===============================
+pts_ok = extract_mser_points(roi_ok)
+pts_fail = extract_mser_points(roi_fail)
+
+print("OK points:", len(pts_ok))
+print("FAIL points:", len(pts_fail))
+
+# ===============================
+# 3. KEZDŐ ELTOLÁS (CENTROID)
+# ===============================
+c_ok = centroid(pts_ok)
+c_fail = centroid(pts_fail)
+
+dx0, dy0 = c_fail - c_ok
+
+# ===============================
+# 4. TRANSZFORMÁCIÓ KERESÉS
+# ===============================
+best = {
+    "ratio": 0,
+    "angle": 0,
+    "dx": 0,
+    "dy": 0,
+    "mean_px": np.inf
+}
+
+MAX_DIST_PX = (MATCH_ACCURACY_UM / PIXEL_SIZE_UM)
+
+for angle in np.linspace(-MATCH_ANGLE_DEG, MATCH_ANGLE_DEG, 21):
+    pts_t = apply_transform(pts_ok, dx0, dy0, angle)
+
+    count, mean_px = match_points(
+        pts_t,
+        pts_fail,
+        MAX_DIST_PX
+    )
+
+    ratio = count / len(pts_ok)
+
+    if ratio > best["ratio"]:
+        best.update({
+            "ratio": ratio,
+            "angle": angle,
+            "dx": dx0,
+            "dy": dy0,
+            "mean_px": mean_px
+        })
+
+# ===============================
+# 5. EREDMÉNY ÉRTÉKELÉS
+# ===============================
+shift_mm = np.linalg.norm([best["dx"], best["dy"]]) * PIXEL_SIZE_UM / 1000
+mean_um = best["mean_px"] * PIXEL_SIZE_UM
+
+print("\n=== MATCH RESULT ===")
+print("Match ratio:", round(best["ratio"], 3))
+print("Rotation (deg):", round(best["angle"], 2))
+print("Shift (mm):", round(shift_mm, 3))
+print("Mean error (um):", round(mean_um, 1))
+
+PASS = (
+    best["ratio"] >= MIN_MATCH_RATIO and
+    abs(best["angle"]) <= MATCH_ANGLE_DEG and
+    shift_mm <= MATCH_DISTANCE_MM and
+    mean_um <= MATCH_ACCURACY_UM
+)
+
+print("\nFINAL RESULT:", "✅ PASS" if PASS else "❌ FAIL")
